@@ -172,13 +172,12 @@ function formatLabel(hhmm) {
               const total = Number((subtotal + gst).toFixed(2));
 
               // lock slot doc //
-              const slotId = `${values.date}_${values.time}`;
+       await addDoc(collection(db, "bookedSlots"), {
+          date: values.date,
+          time: values.time,
+          createdAt: serverTimestamp(),
+       });
 
-              await setDoc(doc(db, "bookedSlots", slotId), {
-                date: values.date,
-                time: values.time,
-                createdAt: serverTimestamp(),
-              });
 
               // save booking (including total payment user need to pay while there stuff will be done.)
               await addDoc(collection(db, "bookings"), {

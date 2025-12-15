@@ -14,36 +14,29 @@ import { onAuthStateChanged } from "firebase/auth";
 import {
   addDoc,
   collection,
-  doc,
   getDocs,
   query,
   serverTimestamp,
-  setDoc,
   where,
 } from "firebase/firestore";
 
 import { Formik } from "formik";
 import * as Yup from "yup";
 
-export default function BookClient() {
-// salon hours //
+// constants (outside component)
 const WORK_START = "10:00";
 const WORK_END = "18:00";
 const SLOT_MINUTES = 30;
-
-// pricing //
 const GST_RATE = 0.05;
 
 const BookingSchema = Yup.object().shape({
   serviceId: Yup.string().required("Service is required"),
-  name: Yup.string()
-    .min(2, "Name must be at least 2 characters")
-    .required("Name is required"),
+  name: Yup.string().min(2, "Name must be at least 2 characters").required("Name is required"),
   date: Yup.string().required("Date is required"),
   time: Yup.string().required("Please select an available slot"),
 });
 
-// helpers //
+// helpers
 function toMinutes(hhmm) {
   const [h, m] = hhmm.split(":").map(Number);
   return h * 60 + m;
@@ -63,6 +56,7 @@ function formatLabel(hhmm) {
   return `${h}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
+export default function BookClient() {
   const router = useRouter();
   const sp = useSearchParams();
   const presetServiceId = sp.get("service") || "";
@@ -73,10 +67,8 @@ function formatLabel(hhmm) {
   const [loadingSlots, setLoadingSlots] = useState(false);
   const [bookedTimes, setBookedTimes] = useState([]);
 
-  // it tracks selected date outside Formik so hooks stay valid //
   const [selectedDate, setSelectedDate] = useState("");
 
-  // login check //
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
@@ -86,7 +78,7 @@ function formatLabel(hhmm) {
     return () => unsub();
   }, [router]);
 
-  // load booked slots when selectedDate changes (hook is now in component, not inside Formik) //
+  // Load booked slots for the selectedDate
   useEffect(() => {
     async function loadBooked() {
       if (!selectedDate) {
@@ -101,11 +93,15 @@ function formatLabel(hhmm) {
           where("date", "==", selectedDate)
         );
         const snap = await getDocs(q);
-        const times = snap.docs.map((d) => d.data()?.time).filter(Boolean);
+
+        const times = snap.docs
+          .map((d) => d.data()?.time)
+          .filter(Boolean);
+
         setBookedTimes(times);
       } catch (e) {
-        console.error(e);
-        alert("Failed to load available slots.");
+        console.error("LOAD SLOTS ERROR:", e);
+        alert(e?.message || "Failed to load available slots.");
       } finally {
         setLoadingSlots(false);
       }
@@ -114,7 +110,6 @@ function formatLabel(hhmm) {
     loadBooked();
   }, [selectedDate]);
 
-  // build slots //
   const slots = useMemo(() => {
     const start = toMinutes(WORK_START);
     const end = toMinutes(WORK_END);
@@ -159,6 +154,8 @@ function formatLabel(hhmm) {
           validationSchema={BookingSchema}
           onSubmit={async (values, { resetForm, setSubmitting }) => {
             try {
+              console.log("SUBMIT START:", values);
+
               if (!user) {
                 alert("Please login first.");
                 router.push("/login");
@@ -171,16 +168,28 @@ function formatLabel(hhmm) {
               const gst = Number((subtotal * GST_RATE).toFixed(2));
               const total = Number((subtotal + gst).toFixed(2));
 
-              // lock slot doc //
-       await addDoc(collection(db, "bookedSlots"), {
-          date: values.date,
-          time: values.time,
-          createdAt: serverTimestamp(),
-       });
+              // Prevent duplicates: check if same date+time already exists
+              const dupeQ = query(
+                collection(db, "bookedSlots"),
+                where("date", "==", values.date),
+                where("time", "==", values.time)
+              );
+              const dupeSnap = await getDocs(dupeQ);
+              if (!dupeSnap.empty) {
+                alert("That slot is already booked. Please choose another one.");
+                return;
+              }
 
+              console.log("Writing bookedSlots...");
+              const slotRef = await addDoc(collection(db, "bookedSlots"), {
+                date: values.date,
+                time: values.time,
+                createdAt: serverTimestamp(),
+              });
+              console.log("bookedSlots saved:", slotRef.id);
 
-              // save booking (including total payment user need to pay while there stuff will be done.)
-              await addDoc(collection(db, "bookings"), {
+              console.log("Writing booking...");
+              const bookingRef = await addDoc(collection(db, "bookings"), {
                 userId: user.uid,
                 email: user.email,
 
@@ -198,17 +207,19 @@ function formatLabel(hhmm) {
                 status: "Pending",
                 createdAt: serverTimestamp(),
               });
+              console.log("booking saved:", bookingRef.id);
 
-              alert(`Booking submitted Total: $${total.toFixed(2)}`);
+              alert(`Booking submitted ✅ Total: $${total.toFixed(2)}`);
 
               resetForm();
-              setSelectedDate(""); // clears slots //
+              setSelectedDate("");
               setBookedTimes((prev) => [...prev, values.time]);
             } catch (err) {
-              console.error(err);
-              alert("That slot is already booked. Please choose another one.");
+              console.error("BOOKING ERROR:", err);
+              alert(err?.message || "Booking failed. Check console for details.");
             } finally {
               setSubmitting(false);
+              console.log("SUBMIT END");
             }
           }}
         >
@@ -222,7 +233,6 @@ function formatLabel(hhmm) {
             isSubmitting,
             setFieldValue,
           }) => {
-            // pricing display //
             const chosen = services.find((s) => s.id === values.serviceId);
             const subtotal = Number(chosen?.price || 0);
             const gst = Number((subtotal * GST_RATE).toFixed(2));
@@ -233,7 +243,6 @@ function formatLabel(hhmm) {
                 onSubmit={handleSubmit}
                 className="mt-6 bg-white rounded-2xl shadow-sm border border-rose-100 p-6 space-y-4"
               >
-                {/* Service dropdown */}
                 <div>
                   <label className="block text-sm font-semibold text-gray-700">
                     Service
@@ -242,9 +251,7 @@ function formatLabel(hhmm) {
                   <select
                     name="serviceId"
                     value={values.serviceId}
-                    onChange={(e) => {
-                      handleChange(e);
-                    }}
+                    onChange={handleChange}
                     onBlur={handleBlur}
                     className="mt-1 w-full rounded-lg border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-rose-300"
                   >
@@ -290,7 +297,7 @@ function formatLabel(hhmm) {
                       handleChange(e);
                       const newDate = e.target.value;
                       setSelectedDate(newDate);
-                      setFieldValue("time", ""); // reset time when date changes //
+                      setFieldValue("time", "");
                     }}
                     onBlur={handleBlur}
                     className="mt-1 w-full rounded-lg border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-rose-300"
@@ -311,7 +318,6 @@ function formatLabel(hhmm) {
                   <p className="text-sm text-red-600 mt-1">{errors.time}</p>
                 )}
 
-                {/* Total card */}
                 <div className="border rounded-xl p-4 bg-rose-50/40">
                   <div className="flex justify-between text-sm text-gray-700">
                     <span>Subtotal</span>

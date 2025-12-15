@@ -1,7 +1,7 @@
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import ServiceCard from "../components/ServiceCard";
-import { services } from "./data/services";
+import { services } from "./services";
 
 export default function ServicesPage() {
   return (

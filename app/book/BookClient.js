@@ -23,7 +23,7 @@ import {
 import { Formik } from "formik";
 import * as Yup from "yup";
 
-// constants (outside component)
+// constants
 const WORK_START = "10:00";
 const WORK_END = "18:00";
 const SLOT_MINUTES = 30;
@@ -31,7 +31,9 @@ const GST_RATE = 0.05;
 
 const BookingSchema = Yup.object().shape({
   serviceId: Yup.string().required("Service is required"),
-  name: Yup.string().min(2, "Name must be at least 2 characters").required("Name is required"),
+  name: Yup.string()
+    .min(2, "Name must be at least 2 characters")
+    .required("Name is required"),
   date: Yup.string().required("Date is required"),
   time: Yup.string().required("Please select an available slot"),
 });
@@ -54,6 +56,22 @@ function formatLabel(hhmm) {
   if (h === 0) h = 12;
   if (h > 12) h -= 12;
   return `${h}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+
+// prevents “Submitting…” hanging forever on Vercel
+function withTimeout(promise, ms = 12000) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error("Request timed out. Check Firebase config/rules/domain.")
+          ),
+        ms
+      )
+    ),
+  ]);
 }
 
 export default function BookClient() {
@@ -92,7 +110,8 @@ export default function BookClient() {
           collection(db, "bookedSlots"),
           where("date", "==", selectedDate)
         );
-        const snap = await getDocs(q);
+
+        const snap = await withTimeout(getDocs(q), 12000);
 
         const times = snap.docs
           .map((d) => d.data()?.time)
@@ -153,9 +172,12 @@ export default function BookClient() {
           }}
           validationSchema={BookingSchema}
           onSubmit={async (values, { resetForm, setSubmitting }) => {
+            setSubmitting(true);
+
             try {
               console.log("SUBMIT START:", values);
 
+              //  must be logged in
               if (!user) {
                 alert("Please login first.");
                 router.push("/login");
@@ -168,45 +190,56 @@ export default function BookClient() {
               const gst = Number((subtotal * GST_RATE).toFixed(2));
               const total = Number((subtotal + gst).toFixed(2));
 
-              // Prevent duplicates: check if same date+time already exists
+              //  Prevent duplicates
               const dupeQ = query(
                 collection(db, "bookedSlots"),
                 where("date", "==", values.date),
                 where("time", "==", values.time)
               );
-              const dupeSnap = await getDocs(dupeQ);
+
+              const dupeSnap = await withTimeout(getDocs(dupeQ), 12000);
+
               if (!dupeSnap.empty) {
                 alert("That slot is already booked. Please choose another one.");
                 return;
               }
 
+              
+              // Save booked slot
               console.log("Writing bookedSlots...");
-              const slotRef = await addDoc(collection(db, "bookedSlots"), {
-                date: values.date,
-                time: values.time,
-                createdAt: serverTimestamp(),
-              });
+              const slotRef = await withTimeout(
+                addDoc(collection(db, "bookedSlots"), {
+                  date: values.date,
+                  time: values.time,
+                  createdAt: serverTimestamp(),
+                }),
+                12000
+              );
               console.log("bookedSlots saved:", slotRef.id);
 
+              // Save booking
               console.log("Writing booking...");
-              const bookingRef = await addDoc(collection(db, "bookings"), {
-                userId: user.uid,
-                email: user.email,
+              const bookingRef = await withTimeout(
+                addDoc(collection(db, "bookings"), {
+                  userId: user.uid,
+                  email: user.email,
 
-                serviceId: values.serviceId,
-                service: serviceName,
+                  serviceId: values.serviceId,
+                  service: serviceName,
 
-                subtotal,
-                gst,
-                total,
+                  subtotal,
+                  gst,
+                  total,
 
-                name: values.name,
-                date: values.date,
-                time: values.time,
+                  name: values.name,
+                  date: values.date,
+                  time: values.time,
 
-                status: "Pending",
-                createdAt: serverTimestamp(),
-              });
+                  status: "Pending",
+                  createdAt: serverTimestamp(),
+                }),
+                12000
+              );
               console.log("booking saved:", bookingRef.id);
 
               alert(`Booking submitted ✅ Total: $${total.toFixed(2)}`);
@@ -216,7 +249,24 @@ export default function BookClient() {
               setBookedTimes((prev) => [...prev, values.time]);
             } catch (err) {
               console.error("BOOKING ERROR:", err);
-              alert(err?.message || "Booking failed. Check console for details.");
+
+              const msg = String(err?.message || "");
+
+              if (msg.includes("permission") || msg.includes("insufficient")) {
+                alert(
+                  "Booking failed: Firestore permission denied. Check Firestore Rules."
+                );
+              } else if (msg.includes("unauthorized-domain")) {
+                alert(
+                  "Booking failed: unauthorized domain. Add your Vercel domain in Firebase Auth settings."
+                );
+              } else if (msg.toLowerCase().includes("timed out")) {
+                alert(
+                  "Booking failed: timed out. Check Vercel env vars + Firebase config."
+                );
+              } else {
+                alert(err?.message || "Booking failed. Check console for details.");
+              }
             } finally {
               setSubmitting(false);
               console.log("SUBMIT END");
@@ -264,7 +314,9 @@ export default function BookClient() {
                   </select>
 
                   {touched.serviceId && errors.serviceId && (
-                    <p className="text-sm text-red-600 mt-1">{errors.serviceId}</p>
+                    <p className="text-sm text-red-600 mt-1">
+                      {errors.serviceId}
+                    </p>
                   )}
                 </div>
 
@@ -338,7 +390,7 @@ export default function BookClient() {
 
                 <button
                   type="submit"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || loadingSlots}
                   className="w-full bg-rose-600 text-white py-2 rounded-lg font-semibold hover:bg-rose-700 transition disabled:opacity-60"
                 >
                   {isSubmitting ? "Submitting..." : "Submit Booking"}
